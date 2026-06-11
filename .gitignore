@@ -1,0 +1,25 @@
+# Secrets — never commit
+.env
+secrets/
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Local CSV exports
+*.csv
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
