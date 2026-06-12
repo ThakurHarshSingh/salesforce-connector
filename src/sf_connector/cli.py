@@ -5,7 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
+from simple_salesforce import Salesforce  # type: ignore[attr-defined]
 
+from . import oauth
 from . import salesforce as sf
 from .config import Settings
 from .sync import run_sync
@@ -24,6 +26,11 @@ def _load_settings() -> Settings:
         typer.secho(f"Configuration error: {exc}", fg="red", err=True)
         typer.secho("Copy .env.example to .env and fill it in.", fg="yellow", err=True)
         raise typer.Exit(1) from exc
+
+
+def _connect(settings: Settings) -> Salesforce:
+    """Connect to Salesforce, preferring an OAuth login if one exists."""
+    return sf.connect_auto(settings)
 
 
 @app.command()
@@ -97,12 +104,74 @@ def sync(
 
 
 @app.command()
+def login() -> None:
+    """Connect a Salesforce account via the browser ("Connect Salesforce" flow).
+
+    Opens Salesforce in your browser, you log in and click Allow, and the tokens
+    are cached locally. This is the exact flow the product's frontend button uses.
+    """
+    settings = _load_settings()
+    if not settings.sf_client_id or not settings.sf_client_secret:
+        typer.secho(
+            "Set SF_CLIENT_ID and SF_CLIENT_SECRET (Connected App consumer key/secret).",
+            fg="red",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    try:
+        tokens = oauth.login(settings)
+        connection = sf.connect_with_token(tokens.instance_url, tokens.access_token)
+        org = connection.query("SELECT Id, Name FROM Organization LIMIT 1")
+        org_name = org["records"][0]["Name"]
+    except Exception as exc:
+        typer.secho(f"✗ Login failed: {exc}", fg="red", err=True)
+        raise typer.Exit(1) from exc
+
+    typer.secho(f"✓ Connected to Salesforce org '{org_name}'.", fg="green")
+    typer.echo(f"  Tokens cached at {settings.sf_token_cache}.")
+    typer.echo("  Now run `sf-connector list-objects` to see the tables.")
+
+
+@app.command(name="list-objects")
+def list_objects(
+    all: bool = typer.Option(
+        False, "--all", help="Include non-queryable objects too."
+    ),
+    contains: str | None = typer.Option(
+        None, help="Only show objects whose API name or label contains this text."
+    ),
+) -> None:
+    """List the Salesforce objects ("tables") available in the connected org."""
+    settings = _load_settings()
+
+    try:
+        connection = _connect(settings)
+        objects = sf.list_objects(connection, queryable_only=not all)
+    except Exception as exc:
+        typer.secho(f"✗ Salesforce: {exc}", fg="red", err=True)
+        raise typer.Exit(1) from exc
+
+    if contains:
+        needle = contains.lower()
+        objects = [
+            obj
+            for obj in objects
+            if needle in obj["name"].lower() or needle in obj["label"].lower()
+        ]
+
+    for obj in objects:
+        typer.echo(f"{obj['name']:<40} {obj['label']}")
+    typer.secho(f"\n{len(objects)} object(s).", fg="green")
+
+
+@app.command()
 def check() -> None:
     """Verify Salesforce authentication and that Auditify settings are present."""
     settings = _load_settings()
 
     try:
-        connection = sf.connect(settings)
+        connection = _connect(settings)
         org = connection.query("SELECT Id, Name FROM Organization LIMIT 1")
         org_name = org["records"][0]["Name"]
     except Exception as exc:

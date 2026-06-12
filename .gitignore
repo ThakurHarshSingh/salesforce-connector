@@ -3,6 +3,7 @@
 secrets/
 *.pem
 *.key
+.sf_token.json
 
 # Python
 __pycache__/

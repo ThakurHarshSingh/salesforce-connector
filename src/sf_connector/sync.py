@@ -39,7 +39,7 @@ def run_sync(
     if not soql and not object_name:
         raise ValueError("Provide either `soql` or `object_name`.")
 
-    connection = sf.connect(settings)
+    connection = sf.connect_auto(settings)
 
     if not soql:
         assert object_name is not None
@@ -54,6 +54,10 @@ def run_sync(
 
     upload_response: dict[str, Any] | None = None
     if upload:
+        if not settings.auditify_access_token:
+            raise RuntimeError(
+                "Uploading needs AUDITIFY_ACCESS_TOKEN. Use --dry-run to skip the upload."
+            )
         with AuditifyClient(
             settings.auditify_base_url, settings.auditify_access_token
         ) as client:

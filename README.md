@@ -1,58 +1,169 @@
 # Auditify Salesforce Connector
 
-A small, standalone CLI that pulls records out of **Salesforce** and uploads
-them into **Auditify** as data sources. Run it on demand or on a schedule
-(cron) — there is no server to host.
+A standalone connector that lets a user **connect their Salesforce account**
+(the same UX as "Login with Google"), lists the objects/tables in their org, and
+pulls records out into **Auditify** as data sources. It ships as a CLI today; the
+OAuth login logic is written so the product backend can reuse it directly behind a
+**"Connect Salesforce"** button.
 
-> This is a **separate** repository. It is not part of the Auditify application
-> repo and imports nothing from it; it only talks to Auditify over its public
-> HTTP API.
+> Separate repository — it imports nothing from the Auditify app and only talks to
+> Auditify over its public HTTP API.
 
-## How it works
+## What this proves / what it's for
 
-```
-Salesforce ──(SOQL, JWT bearer auth)──▶ connector ──(CSV, POST /api/sources/upload)──▶ Auditify
-```
+- **Connect:** a user logs into Salesforce in the browser and consents — no admin
+  setup, no credentials handed to us. (OAuth 2.0 Authorization Code + PKCE.)
+- **Discover:** we read the list of objects ("tables") available in their org.
+- **Fetch (read-only):** we extract records via SOQL and write them to CSV / upload
+  to Auditify.
 
-1. Authenticate to Salesforce with the **OAuth 2.0 JWT Bearer flow**
-   (Connected App + private key — no passwords stored).
-2. Run a SOQL query (or query an object's full field set) and follow pagination.
-3. Serialise the records to CSV.
-4. Upload the CSV to Auditify's data-source ingestion endpoint with an Auditify
-   access token (its `tenant` claim scopes the upload to the right tenant).
+There are **two** ways to authenticate, for two different situations:
 
-## Requirements
+| | **OAuth login** (product flow) | **JWT bearer** (headless) |
+|---|---|---|
+| Who authorizes | Each end-user, in the browser | One integration user, set up once by an admin |
+| Looks like | "Login with Google" | A backend service account |
+| Use it for | Customers self-connecting their own org | An unattended cron job against a single org you own |
+| Command | `sf-connector login` | `sf-connector check` / `sync` with a private key |
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/) (recommended) or pip
-- A Salesforce Connected App configured for the JWT bearer flow
-- An Auditify access token carrying a tenant claim
+The product uses the **OAuth login** flow. JWT is kept for headless/scheduled runs.
 
-## Install
+---
+
+## Quickstart — test the "Connect Salesforce" flow
+
+What you need: a Salesforce org (a free [Developer Edition](https://developer.salesforce.com/signup)
+works) and ~15 minutes.
+
+### 1. Register one app in Salesforce (done once, by us — never by end-users)
+
+Like registering your app once in Google Cloud Console for "Login with Google",
+you create **one** app and every user just clicks through it. Either
+**Connected App** or the newer **External Client App** works.
+
+In Salesforce → **Setup**:
+
+1. Create the app (e.g. **External Client App Manager → New**, or **App Manager → New Connected App**).
+2. **Enable OAuth**, and set:
+   - **Callback URL:** `http://localhost:1717/callback` (for local testing — add your
+     real backend callback URL for production).
+   - **OAuth scopes:** `Manage user data via APIs (api)` and
+     `Perform requests at any time (refresh_token)`.
+   - **PKCE:** leave **Require PKCE enabled** (the connector sends a PKCE challenge).
+   - Do **not** enable "Use digital signatures" (that's only for the JWT flow).
+3. Open **Consumer Details** (or the app's OAuth settings) and copy the
+   **Consumer Key** and **Consumer Secret**.
+
+### 2. Configure
 
 ```bash
-uv sync          # creates .venv and installs the connector + dev tools
+uv sync                 # install
+cp .env.example .env     # then edit .env
 ```
 
-(or `pip install -e .` into a virtualenv)
+Set these four values in `.env` (it is git-ignored — never commit it):
 
-## Configure
+```ini
+SF_CLIENT_ID=<your Consumer Key>
+SF_CLIENT_SECRET=<your Consumer Secret>
+SF_REDIRECT_URI=http://localhost:1717/callback
+SF_DOMAIN=login          # 'login' for prod/dev orgs, 'test' for sandboxes
+```
+
+### 3. Connect and list tables
 
 ```bash
-cp .env.example .env
-# then edit .env
+uv run sf-connector login          # opens the browser → log in → Allow
+uv run sf-connector list-objects   # prints the objects/tables in the org
 ```
 
-| Variable | What it is |
+`login` should end with `✓ Connected to Salesforce org '<name>'`. Tokens are
+cached locally in `.sf_token.json` (git-ignored), so `list-objects` and `sync`
+reuse the session automatically.
+
+> **"Why ~500 tables when I never created any?"** Those are Salesforce's built-in
+> **standard objects** (`Account`, `Contact`, `Lead`, `Opportunity`, plus system
+> tables) — every org ships with them, like `information_schema` in a fresh
+> database. Your own **custom objects** would appear with names ending in `__c`.
+
+### 4. (Optional) prove real rows come through
+
+```bash
+uv run sf-connector sync --object Account --dry-run --limit 5 --output ./account_sample.csv
+```
+
+Open `account_sample.csv` — live records pulled from Salesforce.
+
+---
+
+## For the frontend / backend team
+
+The CLI `login` command is a runnable reference for the product's
+**"Connect Salesforce"** button. The full mapping (which endpoints to build, what
+to reuse, token storage, PKCE) is in
+**[docs/FRONTEND_INTEGRATION.md](docs/FRONTEND_INTEGRATION.md)**.
+
+In short, the backend implements two endpoints that mirror
+[`oauth.py`](src/sf_connector/oauth.py):
+
+1. `GET /connect/salesforce` → redirect the user to the Salesforce authorize URL
+   (with `state` + PKCE `code_challenge`). See `oauth._authorize_url`.
+2. `GET /oauth/callback?code=...` → exchange the code for tokens (with the PKCE
+   `code_verifier` + `client_secret`) and store them per tenant. See
+   `oauth._exchange_code`.
+
+Then expose the existing data functions over HTTP:
+`list_objects` → "pick your tables" screen; `run_sync` → the extract.
+
+---
+
+## CLI reference
+
+| Command | What it does |
 |---|---|
-| `SF_CLIENT_ID` | Connected App **Consumer Key** (JWT issuer) |
-| `SF_USERNAME` | Salesforce user the integration runs as (JWT subject) |
-| `SF_PRIVATE_KEY_FILE` | Path to the RSA private key (PEM) paired with the cert on the Connected App |
-| `SF_DOMAIN` | `login` (prod/dev orgs) or `test` (sandbox) |
-| `AUDITIFY_BASE_URL` | Auditify public base URL (nginx routes `/api` to the backend) |
-| `AUDITIFY_ACCESS_TOKEN` | Auditify JWT access token with a tenant claim |
+| `login` | Browser OAuth login; caches tokens (the "Connect Salesforce" flow) |
+| `list-objects` | List objects/tables in the connected org (`--all`, `--contains <text>`) |
+| `check` | Verify connectivity (uses the cached login, or JWT if configured) |
+| `sync` | Extract records → CSV → upload to Auditify |
 
-### Salesforce Connected App setup (one time)
+`sync` examples:
+
+```bash
+# A whole object (all fields)
+uv run sf-connector sync --object Account
+
+# Specific fields, filtered, limited
+uv run sf-connector sync --object Contact \
+  --fields "Id,FirstName,LastName,Email" --where "Email != null" --limit 1000
+
+# Raw SOQL, into a specific Auditify folder
+uv run sf-connector sync \
+  --soql "SELECT Id, Subject, Status FROM Case WHERE IsClosed = false" \
+  --folder-id <auditify-folder-external-id>
+
+# Preview without uploading (also save the CSV)
+uv run sf-connector sync --object Account --dry-run --output ./accounts.csv
+```
+
+Run any command with `--help` for all options.
+
+---
+
+## Configuration reference
+
+| Variable | Flow | What it is |
+|---|---|---|
+| `SF_CLIENT_ID` | both | Connected/External App **Consumer Key** |
+| `SF_CLIENT_SECRET` | OAuth login | Connected/External App **Consumer Secret** |
+| `SF_REDIRECT_URI` | OAuth login | Callback URL; must match one configured on the app |
+| `SF_DOMAIN` | both | `login` (prod/dev orgs) or `test` (sandbox) |
+| `SF_USERNAME` | JWT | Salesforce user the integration runs as |
+| `SF_PRIVATE_KEY_FILE` | JWT | RSA private key (PEM) paired with the cert on the app |
+| `AUDITIFY_BASE_URL` | upload | Auditify public base URL (nginx routes `/api`) |
+| `AUDITIFY_ACCESS_TOKEN` | upload | Auditify JWT access token carrying a tenant claim |
+
+<details>
+<summary>JWT bearer (headless) setup — only for unattended/scheduled runs</summary>
 
 1. Generate a key pair:
    ```bash
@@ -60,52 +171,21 @@ cp .env.example .env
      -keyout secrets/server.key -out secrets/server.crt \
      -subj "/CN=auditify-connector"
    ```
-2. In Salesforce → **Setup → App Manager → New Connected App**:
-   - Enable OAuth settings, check **Use digital signatures**, upload `server.crt`.
-   - OAuth scopes: `api`, `refresh_token`.
-3. Pre-authorise the integration user (Connected App → **Manage → Edit Policies →
-   Permitted Users: Admin approved users**, then assign via a Permission Set/Profile).
-4. Put `server.key` where `SF_PRIVATE_KEY_FILE` points (kept out of git).
+2. On the Connected App: enable **Use digital signatures**, upload `server.crt`,
+   scopes `api` + `refresh_token`.
+3. Pre-authorise the integration user (**Manage → Edit Policies → Permitted Users:
+   Admin approved users**, then assign via a Permission Set/Profile).
+4. Point `SF_PRIVATE_KEY_FILE` at `server.key` (kept out of git) and set
+   `SF_USERNAME`. Then `uv run sf-connector check`.
 
-## Usage
+</details>
 
-Verify connectivity:
+---
 
-```bash
-uv run sf-connector check
-```
+## Requirements
 
-Sync a whole object (all fields):
-
-```bash
-uv run sf-connector sync --object Account
-```
-
-Pick fields, filter, and limit:
-
-```bash
-uv run sf-connector sync \
-  --object Contact \
-  --fields "Id,FirstName,LastName,Email" \
-  --where "Email != null" \
-  --limit 1000
-```
-
-Raw SOQL, into a specific Auditify folder:
-
-```bash
-uv run sf-connector sync \
-  --soql "SELECT Id, Subject, Status FROM Case WHERE IsClosed = false" \
-  --folder-id <auditify-folder-external-id>
-```
-
-Preview without uploading (also save the CSV locally):
-
-```bash
-uv run sf-connector sync --object Account --dry-run --output ./accounts.csv
-```
-
-Run `uv run sf-connector sync --help` for all options.
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/) (recommended) or `pip install -e .`
 
 ## Quality gates
 
@@ -115,12 +195,19 @@ uv run mypy
 uv run pytest
 ```
 
-## Scope & scaling notes
+## Scaling notes
 
-- Uses the Salesforce **REST Query API** (`query_all`), which transparently
-  pages through results — fine for typical exports up to ~hundreds of thousands
-  of rows. For very large extracts, the Salesforce **Bulk API 2.0** is the next
-  step; it would slot in behind the same `salesforce.query_records` boundary.
-- Uploads use Auditify's direct multipart endpoint (`POST /api/sources/upload`),
-  so no S3 staging is required. Ingestion is asynchronous on Auditify's side;
-  this connector reports the registered data-source id and status.
+- Uses the Salesforce **REST Query API** (`query_all`), which transparently pages
+  results — fine for exports up to ~hundreds of thousands of rows. For very large
+  extracts, **Bulk API 2.0** slots in behind the same `salesforce.query_records`
+  boundary.
+- Uploads use Auditify's direct multipart endpoint (`POST /api/sources/upload`);
+  ingestion is asynchronous on Auditify's side.
+
+## Security
+
+- `.env`, `.sf_token.json`, and `*.pem`/`*.key` are git-ignored — never commit secrets.
+- The connector is **read-only**: it requests the minimum scopes and never write scopes.
+- A production backend must store `refresh_token` encrypted at rest and verify the
+  OAuth `state` parameter on the callback (the local CLI relaxes the `state` check
+  because the loopback redirect can't be intercepted and PKCE binds the code).
