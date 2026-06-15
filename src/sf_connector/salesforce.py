@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from simple_salesforce import Salesforce  # type: ignore[attr-defined]
-from simple_salesforce.exceptions import SalesforceError
 
 from .config import Settings
 
@@ -80,17 +79,37 @@ def connect_auto(settings: Settings) -> Salesforce:
         return connect(settings)
 
     tokens = OAuthTokens.from_file(settings.sf_token_cache)
-    client = connect_with_token(tokens.instance_url, tokens.access_token)
-    try:
-        # Cheapest possible call to confirm the session is still valid.
-        client.query("SELECT Id FROM Organization LIMIT 1")
-        return client
-    except SalesforceError:
+    if not _session_alive(tokens.instance_url, tokens.access_token):
         if not tokens.refresh_token:
-            raise
+            raise RuntimeError(
+                "Salesforce session expired and no refresh token is cached. "
+                "Run `sf-connector login` to reconnect."
+            )
         tokens = refresh_tokens(settings, tokens.refresh_token)
         settings.sf_token_cache.write_text(tokens.to_json())
-        return connect_with_token(tokens.instance_url, tokens.access_token)
+    return connect_with_token(tokens.instance_url, tokens.access_token)
+
+
+def _session_alive(instance_url: str, access_token: str, timeout: float = 10.0) -> bool:
+    """Bounded check of whether an access token is still valid.
+
+    Hits `/services/oauth2/userinfo`, which *requires* a valid token (unlike
+    `/services/data/`, which is unauthenticated) and is API-version agnostic.
+    Uses a short timeout so a slow endpoint fails fast instead of hanging. A
+    401/403 means the session expired and the caller should refresh; a network
+    error is treated as "valid" so the real request surfaces the problem.
+    """
+    import httpx
+
+    try:
+        response = httpx.get(
+            f"{instance_url}/services/oauth2/userinfo",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=timeout,
+        )
+    except httpx.HTTPError:
+        return True
+    return response.status_code not in (401, 403)
 
 
 def count_records(sf: Salesforce, object_name: str) -> int:

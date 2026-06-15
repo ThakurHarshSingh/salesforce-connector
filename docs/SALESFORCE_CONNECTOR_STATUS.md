@@ -97,4 +97,4 @@ read-only list the mockups imply.
 - **Sequence the backend work** (connection store → scheduler) for the persistent
   multi-connection experience in Steps 5–7.
 
-Repo: `ThakurHarshSingh/salesforce-connector` (private) · see `README.md` to run it.
+
