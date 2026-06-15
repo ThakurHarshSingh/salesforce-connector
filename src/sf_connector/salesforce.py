@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from simple_salesforce import Salesforce  # type: ignore[attr-defined]
+from simple_salesforce.exceptions import SalesforceError
 
 from .config import Settings
 
@@ -68,15 +69,38 @@ def connect_auto(settings: Settings) -> Salesforce:
     """Connect, preferring an OAuth login if one exists, else headless JWT.
 
     A cached OAuth token (from `login`) represents a real user "Connect
-    Salesforce" session and takes precedence. Imported lazily to avoid a
-    config/oauth import cycle at module load.
+    Salesforce" session and takes precedence. If that session has expired, we
+    transparently refresh it with the stored refresh token and re-cache the
+    result — so a long-lived connection keeps working. Imported lazily to avoid
+    a config/oauth import cycle at module load.
     """
-    from .oauth import OAuthTokens
+    from .oauth import OAuthTokens, refresh_tokens
 
-    if settings.sf_token_cache.exists():
-        tokens = OAuthTokens.from_file(settings.sf_token_cache)
+    if not settings.sf_token_cache.exists():
+        return connect(settings)
+
+    tokens = OAuthTokens.from_file(settings.sf_token_cache)
+    client = connect_with_token(tokens.instance_url, tokens.access_token)
+    try:
+        # Cheapest possible call to confirm the session is still valid.
+        client.query("SELECT Id FROM Organization LIMIT 1")
+        return client
+    except SalesforceError:
+        if not tokens.refresh_token:
+            raise
+        tokens = refresh_tokens(settings, tokens.refresh_token)
+        settings.sf_token_cache.write_text(tokens.to_json())
         return connect_with_token(tokens.instance_url, tokens.access_token)
-    return connect(settings)
+
+
+def count_records(sf: Salesforce, object_name: str) -> int:
+    """Return the row count for one object (`SELECT COUNT() FROM <object>`).
+
+    Counted lazily, per object, because Salesforce has no cheap bulk row-count:
+    counting every object in an org would be hundreds of queries. A UI should
+    count only the tables the user is actually considering.
+    """
+    return int(sf.query(f"SELECT COUNT() FROM {object_name}")["totalSize"])
 
 
 def all_fields(sf: Salesforce, object_name: str) -> list[str]:

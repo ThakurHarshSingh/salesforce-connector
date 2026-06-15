@@ -122,9 +122,14 @@ Then expose the existing data functions over HTTP:
 | Command | What it does |
 |---|---|
 | `login` | Browser OAuth login; caches tokens (the "Connect Salesforce" flow) |
-| `list-objects` | List objects/tables in the connected org (`--all`, `--contains <text>`) |
+| `list-objects` | List objects/tables (`--all`, `--contains <text>`, `--counts` for row counts) |
 | `check` | Verify connectivity (uses the cached login, or JWT if configured) |
-| `sync` | Extract records → CSV → upload to Auditify |
+| `sync` | Extract records → CSV → upload to Auditify (`--modified-since` for incremental) |
+| `disconnect` | Revoke the OAuth grant at Salesforce and delete the local token cache |
+
+The cached login **auto-refreshes** expired sessions using the stored refresh
+token, so a connection keeps working over time. `SF_DOMAIN` also accepts a full
+**My Domain** host (e.g. `acme.my.salesforce.com`).
 
 `sync` examples:
 

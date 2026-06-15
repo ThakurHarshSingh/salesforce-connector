@@ -80,13 +80,13 @@ def _authorize_url(settings: Settings, state: str, code_challenge: str) -> str:
         "code_challenge": code_challenge,
         "code_challenge_method": "S256",
     }
-    base = f"https://{settings.sf_domain}.salesforce.com/services/oauth2/authorize"
+    base = f"{settings.sf_login_base_url}/services/oauth2/authorize"
     return f"{base}?{urllib.parse.urlencode(params)}"
 
 
 def _exchange_code(settings: Settings, code: str, code_verifier: str) -> OAuthTokens:
     """Swap the one-time authorization `code` for tokens (the backend's job)."""
-    token_url = f"https://{settings.sf_domain}.salesforce.com/services/oauth2/token"
+    token_url = f"{settings.sf_login_base_url}/services/oauth2/token"
     response = httpx.post(
         token_url,
         data={
@@ -106,6 +106,44 @@ def _exchange_code(settings: Settings, code: str, code_verifier: str) -> OAuthTo
         refresh_token=payload.get("refresh_token"),
         instance_url=payload["instance_url"],
     )
+
+
+def refresh_tokens(settings: Settings, refresh_token: str) -> OAuthTokens:
+    """Mint a fresh access token from a stored refresh token.
+
+    Salesforce access tokens (sessions) expire; a long-lived connection must
+    refresh them. The refresh response returns a new `access_token` but reuses
+    the existing `refresh_token`, so we carry it forward.
+    """
+    token_url = f"{settings.sf_login_base_url}/services/oauth2/token"
+    response = httpx.post(
+        token_url,
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": settings.sf_client_id,
+            "client_secret": settings.sf_client_secret,
+        },
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    return OAuthTokens(
+        access_token=payload["access_token"],
+        refresh_token=payload.get("refresh_token") or refresh_token,
+        instance_url=payload["instance_url"],
+    )
+
+
+def revoke_token(settings: Settings, token: str) -> None:
+    """Revoke an access or refresh token at Salesforce (used on disconnect).
+
+    Revoking the refresh token invalidates the whole grant, so future syncs stop
+    — what the product's "Delete connection" must do, not just forget the token.
+    """
+    revoke_url = f"{settings.sf_login_base_url}/services/oauth2/revoke"
+    response = httpx.post(revoke_url, data={"token": token}, timeout=30.0)
+    response.raise_for_status()
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):

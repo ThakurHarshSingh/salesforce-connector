@@ -27,8 +27,25 @@ class Settings(BaseSettings):
     )
     sf_domain: str = Field(
         "login",
-        description="'login' for production/developer orgs, 'test' for sandboxes.",
+        description=(
+            "'login' (prod/dev orgs), 'test' (sandboxes), or a full My Domain host "
+            "such as 'mycompany.my.salesforce.com'."
+        ),
     )
+
+    @property
+    def sf_login_base_url(self) -> str:
+        """The Salesforce host used for OAuth, honouring custom My Domains.
+
+        Accepts the 'login'/'test' shortcuts or a full My Domain host. Many orgs
+        now require login via their My Domain rather than login.salesforce.com.
+        """
+        domain = self.sf_domain.strip()
+        if "." in domain:
+            host = domain if domain.endswith(".salesforce.com") else f"{domain}.salesforce.com"
+        else:
+            host = f"{domain}.salesforce.com"
+        return f"https://{host}"
 
     # --- Salesforce: OAuth 2.0 Authorization Code flow (user clicks "Connect") ---
     # This is the flow behind a "Login with Salesforce" button.
