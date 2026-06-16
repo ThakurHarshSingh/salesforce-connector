@@ -137,11 +137,15 @@ def build_soql(
     fields: list[str],
     where: str | None = None,
     limit: int | None = None,
+    *,
+    order_by: str | None = None,
 ) -> str:
-    """Assemble a SOQL query from parts."""
+    """Assemble a SOQL query from parts (clause order: WHERE, ORDER BY, LIMIT)."""
     soql = f"SELECT {', '.join(fields)} FROM {object_name}"
     if where:
         soql += f" WHERE {where}"
+    if order_by:
+        soql += f" ORDER BY {order_by}"
     if limit:
         soql += f" LIMIT {limit}"
     return soql
