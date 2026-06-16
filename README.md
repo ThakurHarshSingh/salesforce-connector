@@ -96,24 +96,18 @@ Open `account_sample.csv` — live records pulled from Salesforce.
 
 ---
 
-## For the frontend / backend team
+## For the team building the product
 
-The CLI `login` command is a runnable reference for the product's
-**"Connect Salesforce"** button. The full mapping (which endpoints to build, what
-to reuse, token storage, PKCE) is in
-**[docs/FRONTEND_INTEGRATION.md](docs/FRONTEND_INTEGRATION.md)**.
+This repo is a runnable **reference implementation**. The complete plan for what to
+build to ship this at production scale — architecture, the database/multi-tenant model,
+the backend API endpoints, the security model, and a readiness checklist — is in:
 
-In short, the backend implements two endpoints that mirror
-[`oauth.py`](src/sf_connector/oauth.py):
+**➡️ [docs/PRODUCTION_HANDOFF.md](docs/PRODUCTION_HANDOFF.md) — read this first.**
 
-1. `GET /connect/salesforce` → redirect the user to the Salesforce authorize URL
-   (with `state` + PKCE `code_challenge`). See `oauth._authorize_url`.
-2. `GET /oauth/callback?code=...` → exchange the code for tokens (with the PKCE
-   `code_verifier` + `client_secret`) and store them per tenant. See
-   `oauth._exchange_code`.
-
-Then expose the existing data functions over HTTP:
-`list_objects` → "pick your tables" screen; `run_sync` → the extract.
+In short, the backend wraps [`oauth.py`](src/sf_connector/oauth.py) and the
+[`SourceAdapter`](src/sf_connector/adapter.py) in two OAuth endpoints
+(`/connect/salesforce`, `/oauth/callback`) plus a read API, backed by a per-tenant
+database. Full detail in the handoff doc.
 
 ---
 

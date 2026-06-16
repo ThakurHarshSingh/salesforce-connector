@@ -24,3 +24,6 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Office lock/temp files
+~$*
